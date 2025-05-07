@@ -46,20 +46,21 @@ BEGIN {
     total_bytes = 0;
     total_count = 0;
     shown_count = 0;
-    units[0] = "B";
-    units[1] = "KB";
-    units[2] = "MB";
-    units[3] = "GB";
-    units[4] = "TB";
-    BOLD="\033[1m";
-    RESET="\033[0m";
-    BG_GREEN="\033[42m";
-    BG_YELLOW="\033[43m";
-    BG_RED="\033[41m";
-    BG_BLUE="\033[44m";
-    BG_MAGENTA="\033[45m";
-    BG_CYAN="\033[46m";
-    MAX_LINE_LENGTH = 120;
+    RESET="\033[0m";  # Add RESET code definition
+    # Pre-calculate unit strings for faster formatting
+    units[0] = "B"; units[1] = "KB"; units[2] = "MB"; units[3] = "GB"; units[4] = "TB";
+    # Pre-calculate color strings
+    for(p = 0; p < 101; p++) {
+        if (p < 1) color_cache[p] = "\033[38;2;40;180;40m";
+        else if (p < 20) color_cache[p] = sprintf("\033[38;2;40;%d;40m", 180 - (p * 3));
+        else if (p < 40) color_cache[p] = sprintf("\033[38;2;40;40;%dm", 180 + ((p - 20) * 3));
+        else if (p < 60) color_cache[p] = sprintf("\033[38;2;%d;40;180m", 40 + ((p - 40) * 5));
+        else if (p < 80) color_cache[p] = sprintf("\033[38;2;180;40;%dm", 180 - ((p - 60) * 4));
+        else color_cache[p] = sprintf("\033[38;2;%d;40;40m", 180 + ((p - 80) * 0.75));
+    }
+    # Pre-build bar segments
+    bar_segment = "■";  # Back to full block
+    empty_segment = " ";
 }
 
 {
@@ -98,48 +99,42 @@ function format_size(size) {
 }
 
 function make_bar(percent) {
-    if (percent < 1) {
-        color = "\033[38;2;40;180;40m";
-    } else if (percent < 20) {
-        g = 180 - (percent * 3);
-        color = sprintf("\033[38;2;40;%d;40m", g);
-    } else if (percent < 40) {
-        b = 180 + ((percent - 20) * 3);
-        color = sprintf("\033[38;2;40;40;%dm", b);
-    } else if (percent < 60) {
-        r = 40 + ((percent - 40) * 5);
-        color = sprintf("\033[38;2;%d;40;180m", r);
-    } else if (percent < 80) {
-        b = 180 - ((percent - 60) * 4);
-        color = sprintf("\033[38;2;180;40;%dm", b);
-    } else {
-        r = 180 + ((percent - 80) * 0.75);
-        color = sprintf("\033[38;2;%d;40;40m", r);
-    }
-    
-    max = int(percent/2);
+    percent = int(percent);
+    color = color_cache[percent];
+    max = int((percent * 30) / 100); # Back to 30 chars width
     bar = "";
+    
+    # Single block rendering
     for(i = 0; i < max; i++)
-        bar = bar color "■" RESET;
+        bar = bar color bar_segment RESET;
+    
     empty = "";
-    for(i = max; i < 50; i++)
+    for(i = max; i < 30; i++)
         empty = empty " ";
     
-    return sprintf("[%s%s]", bar, empty);
+    return "[" bar empty "]";
 }
 
 function bold_if_sorted(text, column) {
     return (column == sort_by) ? BOLD text RESET : text;
 }
 
-function split_path(path, parts, i, n) {
+function split_path(path) {
+    if (path in path_cache) return path_name[path];
+    
+    path_cache[path] = 1;
+    gsub(/\\/, "/", path);  # Convert Windows paths
     n = split(path, parts, "/");
     path_depth[path] = n;
     path_name[path] = parts[n];
     path_parent[path] = "";
-    for (i = 1; i < n; i++) {
-        if (i > 1) path_parent[path] = path_parent[path] "/";
-        path_parent[path] = path_parent[path] parts[i];
+    
+    if (n > 1) {
+        parent = parts[1];
+        for (i = 2; i < n; i++) {
+            parent = parent "/" parts[i];
+        }
+        path_parent[path] = parent;
     }
     return path_name[path];
 }
@@ -152,12 +147,12 @@ function make_tree_prefix(path, prefix, p) {
 }
 
 function wrap_output(ext, count, size, pct, bar, wrapped, line_content) {
-    if (length(ext) > 10) {
+    if (length(ext) > 15) {
         wrapped = sprintf("%s\n", ext);
-        wrapped = wrapped sprintf("%-11s%8d %12s", "└╴", count, size);
+        wrapped = wrapped sprintf("%-16s%8d %12s", "└╴", count, size);
         line_content = wrapped;
     } else {
-        line_content = sprintf("%-10s %8d %12s", ext, count, size);
+        line_content = sprintf("%-15s %8d %12s", ext, count, size);
     }
     if (sort_by == "size") {
         line_content = sprintf("%s %6.1f%%", line_content, pct);
@@ -198,6 +193,7 @@ END {
         print "No files found.";
         exit 0;
     }
+    
     printf "\nTotal: %s, %d files", format_size(total_bytes), total_count;
     if (max_rows > 0 && total_count > max_rows) {
         printf " (showing top %d)\n", max_rows;
@@ -206,19 +202,19 @@ END {
     }
     
     if (sort_by == "size") {
-        printf "%-10s %8s %12s %6s%% %50s\n", 
-               "EXT", "COUNT", "SIZE", "SIZE", "";
-        printf "%-10s %8s %12s %6s  %50s\n", 
+        printf "%s%-15s %8s %12s %6s%% %30s%s\n",   # Back to 30
+               BOLD, "EXT", "COUNT", "SIZE", "SIZE", "", RESET;
+        printf "%-15s %8s %12s %6s  %30s\n",         # Back to 30
                "---", "-----", "----", "----", "";
     } else if (sort_by == "count") {
-        printf "%-10s %8s %6s%% %12s %50s\n", 
-               "EXT", "COUNT", "CNT", "SIZE", "";
-        printf "%-10s %8s %6s %12s %50s\n", 
+        printf "%s%-15s %8s %6s%% %12s %40s%s\n", 
+               BOLD, "EXT", "COUNT", "CNT", "SIZE", "", RESET;
+        printf "%-15s %8s %6s %12s %40s\n", 
                "---", "-----", "---", "----", "";
     } else {
-        printf "%-10s %8s %12s %50s\n", 
-               "EXT", "COUNT", "SIZE", "";
-        printf "%-10s %8s %12s %50s\n", 
+        printf "%s%-15s %8s %12s %40s%s\n", 
+               BOLD, "EXT", "COUNT", "SIZE", "", RESET;
+        printf "%-15s %8s %12s %40s\n", 
                "---", "-----", "----", "";
     }
     
@@ -233,7 +229,7 @@ END {
                                (sort_by == "size") ? size_pct : 
                                (sort_by == "count") ? count_pct : 0,
                                make_bar(bar_pct))
-        sorted_exts[n++] = e  # Build sort array as we gols
+        sorted_exts[n++] = e  # Build sort array as we go
     }
     
     quicksort(sorted_exts, 0, n-1);
@@ -245,14 +241,22 @@ END {
     if (show_tree) {
         print "\nDirectory Structure:";
         PROCINFO["sorted_in"] = "@val_str_asc";
-        last_parent = "";
+        tree_cache[""] = "";  # Initialize root
+        
+        # First pass - build tree structure
         for (path in paths) {
-            if (path_parent[path] != last_parent) {
-                if (path_parent[path]) {
-                    printf "%s [%s]\n", path_parent[path], format_size(group_sizes[path_parent[path]]);
-                }
-                last_parent = path_parent[path];
+            curr_parent = path_parent[path];
+            if (!tree_cache[curr_parent]) {
+                tree_cache[curr_parent] = sprintf("%s [%s]", 
+                    curr_parent, format_size(group_sizes[curr_parent]));
             }
+        }
+        
+        # Second pass - display tree
+        for (path in tree_cache) {
+            if (path) printf "%s\n", tree_cache[path];
+        }
+        for (path in paths) {
             printf "%s%s\n", make_tree_prefix(path), path_name[path];
         }
     }
